@@ -34,6 +34,7 @@ extern void yyerror(char const *s);
 
 extern struct boot_info *the_boot_info;
 extern bool treesource_error;
+static struct node *dt = NULL;
 %}
 
 %union {
@@ -82,7 +83,9 @@ extern bool treesource_error;
 %type <prop> propdef
 %type <proplist> proplist
 
-%type <node> devicetree
+%type <node> fragment
+%type <node> newtree
+%type <node> refnode
 %type <node> nodedef
 %type <node> subnode
 %type <nodelist> subnodes
@@ -107,9 +110,10 @@ extern bool treesource_error;
 sourcefile:
 	  DT_V1 ';' plugindecl memreserves devicetree
 		{
-			$5->is_plugin = $3;
-			the_boot_info = build_boot_info($4, $5,
-							guess_boot_cpuid($5));
+			dt->is_plugin = $3;
+			the_boot_info = build_boot_info($4, dt,
+							guess_boot_cpuid(dt));
+			dt = NULL;
 		}
 	;
 
@@ -148,47 +152,52 @@ memreserve:
 	;
 
 devicetree:
+	  newtree
+		{
+			dt = $1;
+		}
+	| devicetree fragment
+	;
+
+fragment:
+	  newtree
+		{
+			$$ = merge_nodes(dt, $1);
+		}
+	| refnode nodedef
+		{
+			$$ = merge_nodes($1, $2);
+		}
+	| DT_DEL_NODE refnode ';'
+		{
+			$$ = $2;
+			delete_node($$);
+		}
+	| DT_LABEL fragment
+		{
+			$$ = $2;
+			add_label(&$$->labels, $1);
+		}
+	;
+
+newtree:
 	  '/' nodedef
 		{
 			$$ = name_node($2, "");
 		}
-	| devicetree '/' nodedef
+
+refnode:
+	DT_REF
 		{
-			$$ = merge_nodes($1, $3);
-		}
-
-	| devicetree DT_LABEL DT_REF nodedef
-		{
-			struct node *target = get_node_by_ref($1, $3);
-
-			add_label(&target->labels, $2);
-			if (target)
-				merge_nodes(target, $4);
-			else
-				ERROR(&@3, "Label or path %s not found", $3);
-			$$ = $1;
-		}
-	| devicetree DT_REF nodedef
-		{
-			struct node *target = get_node_by_ref($1, $2);
-
-			if (target)
-				merge_nodes(target, $3);
-			else
-				ERROR(&@2, "Label or path %s not found", $2);
-			$$ = $1;
-		}
-	| devicetree DT_DEL_NODE DT_REF ';'
-		{
-			struct node *target = get_node_by_ref($1, $3);
-
-			if (target)
-				delete_node(target);
-			else
-				ERROR(&@3, "Label or path %s not found", $3);
-
-
-			$$ = $1;
+			$$ = get_node_by_ref(dt, $1);
+			if (!$$) {
+				const char *msg = ($1[0] == '/'
+					? "Node not found: %s"
+					: "Node label '%s' not found");
+				ERROR(&@1, msg, $1);
+				// fake node to avoid lots of NULL-tests
+				$$ = build_node(NULL, NULL);
+			}
 		}
 	;
 
